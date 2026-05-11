@@ -58,9 +58,30 @@ jobs:
           -D warnings
           -A dead_code
 
+      - name: Clippy (shell)
+        run: >
+          cargo clippy
+          -p shell
+          --target x86_64-unknown-none
+          --
+          -D warnings
+          -A dead_code
+
+      - name: Clippy (argon-user)
+        run: >
+          cargo clippy
+          -p argon-user
+          --target x86_64-unknown-none
+          --
+          -D warnings
+          -A dead_code
+
       # disk-builder runs on the host — no --target flag.
       - name: Build disk images
         run: cargo build -p disk-builder
+
+      - name: Clippy (disk-builder)
+        run: cargo clippy -p disk-builder -- -D warnings
 
       - name: Upload disk images (debug)
         uses: actions/upload-artifact@v4
@@ -86,6 +107,12 @@ jobs:
 
       - name: Check formatting (kernel)
         run: cargo fmt -p kernel --check
+
+      - name: Check formatting (shell)
+        run: cargo fmt -p shell --check
+
+      - name: Check formatting (argon-user)
+        run: cargo fmt -p argon-user --check
 
       - name: Check formatting (disk-builder)
         run: cargo fmt -p disk-builder --check
