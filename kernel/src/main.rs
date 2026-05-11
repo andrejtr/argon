@@ -66,7 +66,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     // 9. Scheduler: spawn tasks and start round-robin.
     future::scheduler::init();
-    future::scheduler::spawn(kernel_shell_task);
+    // Launch the shell as a ring-3 user-mode process.  Falls back to a
+    // kernel-mode shell if the ELF can't be loaded (e.g. disk full during build).
+    if !launch_shell() {
+        future::scheduler::spawn(kernel_shell_task);
+    }
     serial_println!("scheduler: running");
 
     serial_println!("argonOS ready.");
@@ -75,6 +79,55 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     loop {
         x86_64::instructions::interrupts::enable_and_hlt();
     }
+}
+
+// ---------------------------------------------------------------------------
+// User-mode shell launch
+// ---------------------------------------------------------------------------
+
+/// Embed the shell ELF binary, parse it, create a user address space, and
+/// spawn it as a ring-3 process.  Returns `true` on success.
+fn launch_shell() -> bool {
+    // The shell binary is embedded at compile time via the bindeps artifact dep.
+    const SHELL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_SHELL_shell"));
+
+    let elf = match crate::future::elf::load(SHELL_ELF) {
+        Ok(e) => e,
+        Err(e) => {
+            serial_println!("shell: ELF load failed: {:?}", e);
+            return false;
+        }
+    };
+
+    let mut addr_space = match crate::memory::address_space::UserAddressSpace::new() {
+        Some(a) => a,
+        None => {
+            serial_println!("shell: OOM creating address space");
+            return false;
+        }
+    };
+
+    let entry = match addr_space.load_elf(&elf) {
+        Some(e) => e,
+        None => {
+            serial_println!("shell: failed to map ELF segments");
+            return false;
+        }
+    };
+
+    // Stack top: one page below USER_STACK_TOP so the first push doesn't fault.
+    let user_rsp = crate::memory::address_space::USER_STACK_TOP - 8;
+    let cr3 = addr_space.cr3;
+    // UserAddressSpace has no Drop impl; frames stay live for the process lifetime.
+    let _ = addr_space;
+
+    crate::future::scheduler::spawn_user_process(cr3, entry, user_rsp);
+    serial_println!(
+        "shell: user-mode process spawned (entry={:#x} rsp={:#x})",
+        entry,
+        user_rsp
+    );
+    true
 }
 
 // ---------------------------------------------------------------------------

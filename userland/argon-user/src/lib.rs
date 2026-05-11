@@ -20,7 +20,9 @@ pub mod nr {
     pub const SCHED_YIELD: u64 = 24;
     pub const GETPID: u64 = 39;
     pub const EXIT: u64 = 60;
+    pub const REBOOT: u64 = 169;
     pub const SPAWN: u64 = 400;
+    pub const READDIR: u64 = 401;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,10 @@ pub mod nr {
 // ---------------------------------------------------------------------------
 
 /// Issue a syscall with 0 arguments.
+///
+/// # Safety
+/// The caller must ensure `nr` is a valid argonOS syscall number and that
+/// calling it is sound in the current execution context.
 #[inline(always)]
 pub unsafe fn syscall0(nr: u64) -> u64 {
     let ret: u64;
@@ -42,6 +48,10 @@ pub unsafe fn syscall0(nr: u64) -> u64 {
 }
 
 /// Issue a syscall with 1 argument.
+///
+/// # Safety
+/// The caller must ensure `nr` is a valid argonOS syscall number, that `a0`
+/// satisfies any requirements of that syscall, and that calling it is sound.
 #[inline(always)]
 pub unsafe fn syscall1(nr: u64, a0: u64) -> u64 {
     let ret: u64;
@@ -57,6 +67,10 @@ pub unsafe fn syscall1(nr: u64, a0: u64) -> u64 {
 }
 
 /// Issue a syscall with 3 arguments.
+///
+/// # Safety
+/// The caller must ensure `nr` is a valid argonOS syscall number and that
+/// `a0`–`a2` satisfy the argument requirements of that syscall.
 #[inline(always)]
 pub unsafe fn syscall3(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     let ret: u64;
@@ -87,8 +101,10 @@ pub fn read(fd: u64, buf: &mut [u8]) -> isize {
 
 pub fn exit(code: i32) -> ! {
     unsafe { syscall1(nr::EXIT, code as u64) };
-    // Should never reach here.
-    loop {}
+    // Should never reach here — spin in case the kernel doesn't terminate us.
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 pub fn getpid() -> u32 {
@@ -97,6 +113,38 @@ pub fn getpid() -> u32 {
 
 pub fn sched_yield() {
     unsafe { syscall0(nr::SCHED_YIELD) };
+}
+
+/// Open a file at `path`.  Returns the kernel fd on success (>= 0), or a
+/// negative errno on failure.
+pub fn open(path: &str) -> i64 {
+    unsafe { syscall1(nr::OPEN, path.as_ptr() as u64) as i64 }
+}
+
+/// Close a kernel file descriptor.
+pub fn close(fd: u64) -> i64 {
+    unsafe { syscall1(nr::CLOSE, fd) as i64 }
+}
+
+/// List directory entries at `path` into `buf` as newline-separated names.
+/// Returns the number of bytes written, or a negative errno on failure.
+pub fn readdir(path: &str, buf: &mut [u8]) -> isize {
+    unsafe {
+        syscall3(
+            nr::READDIR,
+            path.as_ptr() as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        ) as isize
+    }
+}
+
+/// Reboot the system.  Does not return.
+pub fn reboot() -> ! {
+    unsafe { syscall0(nr::REBOOT) };
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@
 #![no_std]
 #![no_main]
 
-use argon_user::{getpid, println, read, sched_yield, write};
+use argon_user::{close, getpid, open, println, read, readdir, reboot, sched_yield, write};
 
 /// Shell entry point called by the OS loader.
 #[unsafe(no_mangle)]
@@ -90,16 +90,25 @@ fn cmd_yield() {
 }
 
 fn cmd_reboot() {
-    println!("halting…");
-    // No ACPI yet — busy loop (the watchdog/reset would need ACPI or port 0x64).
-    loop {}
+    println!("rebooting...");
+    reboot()
 }
 
 fn cmd_ls() {
-    // sys_readdir is not yet exposed as a userspace syscall; placeholder.
-    println!("/ (virtual root)");
-    println!("  /etc/os-release");
-    println!("  /boot/motd");
+    let mut buf = [0u8; 1024];
+    let n = readdir("/", &mut buf);
+    if n <= 0 {
+        println!("ls: error");
+        return;
+    }
+    println!("/");
+    for entry in core::str::from_utf8(&buf[..n as usize])
+        .unwrap_or("")
+        .split('\n')
+        .filter(|s| !s.is_empty())
+    {
+        println!("  {}", entry);
+    }
 }
 
 fn cmd_cat(path: &str) {
@@ -107,21 +116,19 @@ fn cmd_cat(path: &str) {
         println!("usage: cat <path>");
         return;
     }
-    // sys_open + sys_read stubs — will work once the kernel-side pointer
-    // validation and VFS fd plumbing is complete.
-    use argon_user::{nr, syscall1, syscall3};
-    let fd = unsafe { syscall1(nr::OPEN, path.as_ptr() as u64) };
-    if fd > i32::MAX as u64 {
+    let fd = open(path);
+    if fd < 0 {
         println!("cat: cannot open '{}'", path);
         return;
     }
+    let fd = fd as u64;
     let mut buf = [0u8; 512];
-    let n = unsafe { syscall3(nr::READ, fd, buf.as_mut_ptr() as u64, buf.len() as u64) };
-    if n == 0 {
+    let n = read(fd, &mut buf);
+    close(fd);
+    if n <= 0 {
         println!("(empty)");
     } else {
         let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("<binary>");
         write(1, s.as_bytes());
     }
-    unsafe { syscall1(nr::CLOSE, fd) };
 }

@@ -4,9 +4,9 @@
 /// every 10 ms; after `TIME_SLICE_TICKS` ticks the current task is
 /// preempted and the next ready task is switched in.
 ///
-/// Context switching is done by swapping RSP between task stacks.  Each task
-/// starts life as a kernel function and runs entirely in ring 0 until
-/// user-mode support is added.
+/// Context switching is done by swapping RSP between task stacks.  The
+/// scheduler lock is RELEASED before performing the actual stack swap so that
+/// future timer ticks can re-enter `on_tick` without deadlocking.
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +24,12 @@ pub static SCHEDULER: Mutex<Option<Scheduler>> = Mutex::new(None);
 
 /// Ticks elapsed in the current time-slice.
 static SLICE_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Pending user-mode entry RIP — written by the scheduler before the first
+/// switch into a user task and consumed by `user_mode_trampoline`.
+static PENDING_USER_ENTRY: AtomicU64 = AtomicU64::new(0);
+/// Pending user-mode RSP — same lifetime as PENDING_USER_ENTRY.
+static PENDING_USER_RSP: AtomicU64 = AtomicU64::new(0);
 
 /// Each kernel task gets a 64 KiB stack.
 const TASK_STACK_SIZE: usize = 64 * 1024;
@@ -47,11 +53,17 @@ impl TaskStack {
 /// Internal per-task record (augments the public `Process` PCB).
 struct Task {
     process: Process,
-    /// Saved RSP (None for the idle task / task not yet started).
+    /// Saved kernel RSP.  `Some` after first initialisation.
     rsp: Option<u64>,
     stack: TaskStack,
     /// CR3 physical frame for user-mode processes (None = kernel task).
     user_cr3: Option<PhysFrame>,
+    /// User-mode entry RIP for this task's first switch (user tasks only).
+    user_entry: u64,
+    /// Initial user-mode RSP for this task's first switch (user tasks only).
+    user_rsp_init: u64,
+    /// `true` once this task has been switched into at least once.
+    started: bool,
 }
 
 pub struct Scheduler {
@@ -90,40 +102,38 @@ impl Scheduler {
             rsp: Some(rsp),
             stack,
             user_cr3: None,
+            user_entry: 0,
+            user_rsp_init: 0,
+            started: true, // kernel tasks are ready from spawn
         });
 
         serial_println!("scheduler: spawned pid={}", pid.0);
         pid
     }
 
-    /// Called from the timer IRQ every tick.  Switches task when the slice
-    /// is exhausted.
-    pub fn tick(&mut self) {
-        let ticks = SLICE_TICKS.fetch_add(1, Ordering::Relaxed);
-        if ticks + 1 >= TIME_SLICE_TICKS {
-            SLICE_TICKS.store(0, Ordering::Relaxed);
-            self.switch_next();
-        }
-    }
-
-    fn switch_next(&mut self) {
+    /// Find the next ready task, update scheduler state, and return the raw
+    /// RSP pointers needed for the context switch.
+    ///
+    /// The caller MUST release the scheduler lock before calling
+    /// `context_switch` with the returned pointers; this prevents deadlock
+    /// when a timer IRQ fires during the switch.
+    ///
+    /// Returns `None` if no switch is necessary.
+    fn find_and_prepare_switch(&mut self) -> Option<(*mut Option<u64>, Option<u64>)> {
         if self.tasks.len() < 2 {
-            return; // nothing to switch to
+            return None;
         }
-
-        // Find the next Ready task.
         let len = self.tasks.len();
         let mut next = (self.current + 1) % len;
         for _ in 0..len {
-            if self.tasks[next].process.state == ProcessState::Ready
-                || self.tasks[next].process.state == ProcessState::Running
-            {
-                break;
+            match self.tasks[next].process.state {
+                ProcessState::Ready | ProcessState::Running => break,
+                _ => {}
             }
             next = (next + 1) % len;
         }
         if next == self.current {
-            return;
+            return None;
         }
 
         self.tasks[self.current].process.state = ProcessState::Ready;
@@ -133,29 +143,58 @@ impl Scheduler {
         self.current = next;
 
         // Update TSS.RSP0 and PerCpu kernel_rsp for the incoming task.
-        // This ensures interrupts and SYSCALLs from ring 3 use the right stack.
         let kstack_top = self.tasks[next].stack.top() as u64;
         crate::arch::x86_64::gdt::set_rsp0(kstack_top);
         crate::arch::x86_64::percpu::set_kernel_rsp(kstack_top);
 
-        // Switch CR3 if the incoming task has its own page table.
+        // Switch CR3 if the incoming task has its own address space.
         if let Some(cr3) = self.tasks[next].user_cr3 {
             use x86_64::registers::control::{Cr3, Cr3Flags};
             unsafe { Cr3::write(cr3, Cr3Flags::empty()) };
         }
 
-        // Copy next RSP before mutably borrowing tasks[prev].
+        // Publish user entry info before the first switch into a user task.
+        if self.tasks[next].user_cr3.is_some() && !self.tasks[next].started {
+            PENDING_USER_ENTRY.store(self.tasks[next].user_entry, Ordering::Release);
+            PENDING_USER_RSP.store(self.tasks[next].user_rsp_init, Ordering::Release);
+            self.tasks[next].started = true;
+        }
+
+        // Return raw pointers — caller releases the lock, then switches.
         let next_rsp = self.tasks[next].rsp;
-        // SAFETY: we hold the scheduler lock during the switch.
-        unsafe { context_switch(&mut self.tasks[prev].rsp, next_rsp) };
+        let prev_rsp: *mut Option<u64> = &mut self.tasks[prev].rsp;
+        Some((prev_rsp, next_rsp))
     }
 }
 
 /// Called from the timer IRQ handler.
+///
+/// Phase 1: acquire the lock, increment the tick counter, decide whether to
+/// switch, update scheduler state, and extract the RSP swap parameters.
+/// Phase 2: RELEASE the lock, then perform the stack swap.  This two-phase
+/// design means the lock is never held across a context switch, so future
+/// timer IRQs can safely re-enter `on_tick` without spinning forever.
 pub fn on_tick() {
-    // Try-lock to avoid deadlock if the IRQ fires while we hold the lock.
-    if let Some(ref mut sched) = *SCHEDULER.lock() {
-        sched.tick();
+    let switch_info = {
+        let mut guard = match SCHEDULER.try_lock() {
+            Some(g) => g,
+            None => return, // skip tick if scheduler is busy
+        };
+        let ticks = SLICE_TICKS.fetch_add(1, Ordering::Relaxed);
+        if ticks + 1 < TIME_SLICE_TICKS {
+            return; // guard dropped, lock released
+        }
+        SLICE_TICKS.store(0, Ordering::Relaxed);
+        match *guard {
+            Some(ref mut sched) => sched.find_and_prepare_switch(),
+            None => None,
+        }
+        // `guard` is dropped here — lock is released BEFORE the stack swap.
+    };
+    if let Some((prev_rsp, next_rsp)) = switch_info {
+        // SAFETY: pointers reference live Task stack fields; the lock is
+        // released so concurrent timer ticks won't deadlock.
+        unsafe { context_switch(prev_rsp, next_rsp) };
     }
 }
 
@@ -179,10 +218,14 @@ pub fn spawn(entry: fn() -> !) -> Pid {
 
 /// Spawn a user-mode process with its own address space.
 ///
-/// The task's kernel stack is allocated from the heap; `user_cr3` is the L4
-/// frame of the process's address space; `entry` is the user-space RIP and
-/// `user_rsp` is the user-space RSP.
-pub fn spawn_user_process(user_cr3: PhysFrame, _entry: u64, _user_rsp: u64) -> Pid {
+/// `user_cr3` is the L4 frame for the process, `entry` is the user-space
+/// RIP, and `user_rsp` is the initial user-space stack pointer.
+///
+/// The task's kernel stack is initialised to call `user_mode_trampoline`
+/// on the first context switch.  The trampoline reads `PENDING_USER_ENTRY`
+/// and `PENDING_USER_RSP` (published by `find_and_prepare_switch`) and
+/// performs the one-way `iretq` into ring 3.
+pub fn spawn_user_process(user_cr3: PhysFrame, entry: u64, user_rsp: u64) -> Pid {
     let mut guard = SCHEDULER.lock();
     let sched = guard.as_mut().expect("scheduler not initialised");
 
@@ -190,12 +233,8 @@ pub fn spawn_user_process(user_cr3: PhysFrame, _entry: u64, _user_rsp: u64) -> P
     sched.next_pid += 1;
 
     let mut stack = TaskStack::new();
-    // Prepare a kernel-side initial frame that calls `enter_user_mode`.
-    // We use a trampoline closure stored in a static to avoid heap closures.
-    // Instead, we set up the stack so that the first ret lands in
-    // `user_entry_trampoline`, which reads the entry/rsp from per-task storage.
-    // For simplicity: use the prepare_initial_stack path with a proxy fn.
-    let rsp = prepare_initial_stack(stack.top(), idle_task); // placeholder
+    // First context-switch into this task will `ret` into user_mode_trampoline.
+    let rsp = prepare_initial_stack(stack.top(), user_mode_trampoline);
 
     let mut process = Process::new(pid);
     process.state = ProcessState::Ready;
@@ -205,17 +244,30 @@ pub fn spawn_user_process(user_cr3: PhysFrame, _entry: u64, _user_rsp: u64) -> P
         rsp: Some(rsp),
         stack,
         user_cr3: Some(user_cr3),
+        user_entry: entry,
+        user_rsp_init: user_rsp,
+        started: false, // find_and_prepare_switch will publish PENDING_* on first switch
     });
 
-    // Immediately update TSS for the new task (will be refreshed on switch).
-    serial_println!("scheduler: spawned user pid={}", pid.0);
+    serial_println!("scheduler: spawned user pid={} entry={:#x}", pid.0, entry);
     pid
 }
 
 /// Force an immediate task switch (sys_yield implementation).
 pub fn force_yield() {
-    if let Some(ref mut sched) = *SCHEDULER.lock() {
-        sched.switch_next();
+    let switch_info = {
+        let mut guard = match SCHEDULER.try_lock() {
+            Some(g) => g,
+            None => return,
+        };
+        SLICE_TICKS.store(0, Ordering::Relaxed);
+        match *guard {
+            Some(ref mut sched) => sched.find_and_prepare_switch(),
+            None => None,
+        }
+    };
+    if let Some((prev_rsp, next_rsp)) = switch_info {
+        unsafe { context_switch(prev_rsp, next_rsp) };
     }
 }
 
@@ -229,14 +281,28 @@ pub fn current_pid() -> Option<Pid> {
 
 /// Mark the current task as Zombie and switch to the next ready task.
 pub fn exit_current(code: i32) {
-    if let Some(ref mut sched) = *SCHEDULER.lock() {
-        sched.tasks[sched.current].process.state = ProcessState::Zombie(code);
-        serial_println!(
-            "scheduler: pid={} exited code={}",
-            sched.tasks[sched.current].process.pid.0,
-            code
-        );
-        sched.switch_next();
+    let switch_info = {
+        let mut guard = match SCHEDULER.try_lock() {
+            Some(g) => g,
+            None => return,
+        };
+        match *guard {
+            Some(ref mut sched) => {
+                let cur = sched.current;
+                sched.tasks[cur].process.state = ProcessState::Zombie(code);
+                serial_println!(
+                    "scheduler: pid={} exited code={}",
+                    sched.tasks[cur].process.pid.0,
+                    code
+                );
+                SLICE_TICKS.store(0, Ordering::Relaxed);
+                sched.find_and_prepare_switch()
+            }
+            None => None,
+        }
+    };
+    if let Some((prev_rsp, next_rsp)) = switch_info {
+        unsafe { context_switch(prev_rsp, next_rsp) };
     }
 }
 
@@ -272,19 +338,29 @@ fn prepare_initial_stack(stack_top: *mut u8, entry: fn() -> !) -> u64 {
 ///
 /// # Safety
 /// Both RSP values must point to valid, correctly-initialised stacks.
+/// Perform the raw RSP swap.
+///
+/// `prev_rsp` is a raw pointer into the current task's `rsp` field;
+/// the scheduler lock must be released by the caller BEFORE this call.
+///
+/// # Safety
+/// * Both stacks must be valid, correctly initialised kernel stacks.
+/// * The scheduler lock must NOT be held when this function is called.
 #[inline(never)]
-unsafe fn context_switch(prev_rsp: &mut Option<u64>, next_rsp: Option<u64>) {
+unsafe fn context_switch(prev_rsp: *mut Option<u64>, next_rsp: Option<u64>) {
     let next = match next_rsp {
         Some(rsp) => rsp,
         None => return,
     };
-    let prev_slot: *mut u64 = match prev_rsp {
+    // Get a pointer to the u64 value inside the Option<u64>.
+    // SAFETY: the task was spawned with rsp = Some(...), so this is Some.
+    let prev_slot: *mut u64 = match &mut *prev_rsp {
         Some(ref mut r) => r as *mut u64,
         None => return,
     };
 
     asm!(
-        // Save callee-saved registers (the ABI already handles caller-saved).
+        // Save callee-saved registers (ABI guarantees caller-saved are not needed).
         "push rbx",
         "push rbp",
         "push r12",
@@ -293,9 +369,9 @@ unsafe fn context_switch(prev_rsp: &mut Option<u64>, next_rsp: Option<u64>) {
         "push r15",
         // Save current RSP into *prev_slot.
         "mov [{prev}], rsp",
-        // Switch to new stack.
+        // Switch to the next task's stack.
         "mov rsp, {next}",
-        // Restore new task's callee-saved registers.
+        // Restore next task's callee-saved registers.
         "pop r15",
         "pop r14",
         "pop r13",
@@ -306,6 +382,21 @@ unsafe fn context_switch(prev_rsp: &mut Option<u64>, next_rsp: Option<u64>) {
         next = in(reg) next,
         options(nostack, preserves_flags),
     );
+}
+
+/// Kernel-side trampoline for user-mode processes.
+///
+/// This is the first function a user task executes on its kernel stack.
+/// It reads the entry RIP and RSP published by `find_and_prepare_switch`
+/// and performs the one-way `iretq` into ring 3.  Never returns.
+fn user_mode_trampoline() -> ! {
+    let entry = PENDING_USER_ENTRY.load(Ordering::Acquire);
+    let user_rsp = PENDING_USER_RSP.load(Ordering::Acquire);
+    // CR3 was already written by find_and_prepare_switch; read it back so
+    // enter_user_mode can write it again (which is a no-op but keeps the
+    // API consistent).
+    let (cr3_frame, _) = x86_64::registers::control::Cr3::read();
+    unsafe { crate::future::usermode::enter_user_mode(entry, user_rsp, cr3_frame) }
 }
 
 /// The idle task — runs when no other task is ready.

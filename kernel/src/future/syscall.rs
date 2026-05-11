@@ -1,6 +1,33 @@
+use crate::future::vfs::VFS;
 use crate::serial_println;
 
 extern crate alloc;
+
+use crate::future::vfs::Fd as VfsFd;
+/// Global kernel file-descriptor table.
+///
+/// stdin(0)/stdout(1)/stderr(2) are always terminals; fds ≥3 are VFS files.
+/// Maps kernel_fd → VFS Fd.
+use alloc::collections::BTreeMap;
+use core::sync::atomic::AtomicU32;
+use spin::Mutex;
+
+static FDTABLE: Mutex<BTreeMap<u32, VfsFd>> = Mutex::new(BTreeMap::new());
+static NEXT_FD: AtomicU32 = AtomicU32::new(3);
+
+fn alloc_kfd(vfs_fd: VfsFd) -> u32 {
+    let kfd = NEXT_FD.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    FDTABLE.lock().insert(kfd, vfs_fd);
+    kfd
+}
+
+fn lookup_kfd(kfd: u32) -> Option<VfsFd> {
+    FDTABLE.lock().get(&kfd).copied()
+}
+
+fn free_kfd(kfd: u32) -> Option<VfsFd> {
+    FDTABLE.lock().remove(&kfd)
+}
 
 /// Syscall dispatch layer.
 ///
@@ -26,8 +53,12 @@ pub enum Syscall {
     /// getpid — return the PID of the calling process.
     Getpid = 39,
     Exit = 60,
+    /// reboot — reset the machine via the PS/2 keyboard controller.
+    Reboot = 169,
     /// argonOS: spawn a kernel task by entry-point address.
     Spawn = 400,
+    /// argonOS: list directory entries.
+    Readdir = 401,
     /// Any number not yet implemented.
     Unknown,
 }
@@ -42,7 +73,9 @@ impl From<u64> for Syscall {
             24 => Syscall::SchedYield,
             39 => Syscall::Getpid,
             60 => Syscall::Exit,
+            169 => Syscall::Reboot,
             400 => Syscall::Spawn,
+            401 => Syscall::Readdir,
             _ => Syscall::Unknown,
         }
     }
@@ -60,12 +93,14 @@ pub fn dispatch(id: u64, arg0: u64, arg1: u64, arg2: u64, _arg3: u64) -> u64 {
     match Syscall::from(id) {
         Syscall::Write => sys_write(arg0, arg1, arg2),
         Syscall::Read => sys_read(arg0, arg1, arg2),
-        Syscall::Open => sys_open(arg1),
+        Syscall::Open => sys_open(arg0), // arg0 = rdi = path pointer
         Syscall::Close => sys_close(arg0),
         Syscall::SchedYield => sys_yield(),
         Syscall::Getpid => sys_getpid(),
         Syscall::Exit => sys_exit(arg0),
+        Syscall::Reboot => sys_reboot(),
         Syscall::Spawn => sys_spawn(arg0),
+        Syscall::Readdir => sys_readdir(arg0, arg1, arg2),
         Syscall::Unknown => {
             serial_println!("syscall: unknown id={}", id);
             ENOSYS
@@ -98,20 +133,33 @@ fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
 }
 
 fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
-    if fd != 0 {
-        return EBADF;
-    }
     if !crate::memory::uaccess::is_user_range(buf_ptr, len as usize) {
         return u64::MAX - 13; // -EFAULT
     }
-    // Read one character from the keyboard driver.
-    let c = crate::drivers::keyboard::read_char();
-    let buf = [c];
-    // SAFETY: is_user_range validated the address; STAC/CLAC bypass SMAP.
-    if !unsafe { crate::memory::uaccess::copy_to_user(buf_ptr, &buf) } {
-        return u64::MAX - 13;
+    if fd == 0 {
+        // Read a full line from the keyboard (blocks until Enter is pressed).
+        let mut tmp = alloc::vec![0u8; len as usize];
+        let n = crate::drivers::keyboard::readline(&mut tmp);
+        if !unsafe { crate::memory::uaccess::copy_to_user(buf_ptr, &tmp[..n]) } {
+            return u64::MAX - 13;
+        }
+        n as u64
+    } else {
+        // Read from an open VFS file descriptor.
+        let vfs_fd = match lookup_kfd(fd as u32) {
+            Some(f) => f,
+            None => return EBADF,
+        };
+        let mut tmp = alloc::vec![0u8; len as usize];
+        let n = match VFS.lock().read(vfs_fd, &mut tmp) {
+            Ok(n) => n,
+            Err(_) => return EBADF,
+        };
+        if !unsafe { crate::memory::uaccess::copy_to_user(buf_ptr, &tmp[..n]) } {
+            return u64::MAX - 13;
+        }
+        n as u64
     }
-    1
 }
 
 fn sys_open(path_ptr: u64) -> u64 {
@@ -126,12 +174,24 @@ fn sys_open(path_ptr: u64) -> u64 {
         Ok(s) => s,
         Err(_) => return u64::MAX - 22, // -EINVAL
     };
-    serial_println!("sys_open: path=\"{}\"", path);
-    ENOSYS
+    match VFS.lock().open(path) {
+        Ok(vfs_fd) => {
+            let kfd = alloc_kfd(vfs_fd);
+            serial_println!("sys_open: \"{}\" → kfd={}", path, kfd);
+            kfd as u64
+        }
+        Err(_) => {
+            serial_println!("sys_open: not found \"{}\"", path);
+            u64::MAX - 2 // -ENOENT
+        }
+    }
 }
 
 fn sys_close(fd: u64) -> u64 {
-    serial_println!("sys_close: fd={}", fd);
+    if let Some(vfs_fd) = free_kfd(fd as u32) {
+        let _ = VFS.lock().close(vfs_fd);
+        serial_println!("sys_close: kfd={}", fd);
+    }
     0
 }
 
@@ -157,4 +217,47 @@ fn sys_spawn(_entry_ptr: u64) -> u64 {
     // Spawning an arbitrary function pointer from userland is not yet safe —
     // requires ELF loading + page-table isolation.  Return ENOSYS for now.
     ENOSYS
+}
+
+/// List directory entries at `path` into the user buffer as newline-separated
+/// entry names.  Returns the number of bytes written on success.
+fn sys_readdir(path_ptr: u64, buf_ptr: u64, buf_len: u64) -> u64 {
+    let mut path_buf = [0u8; 256];
+    let len = match unsafe { crate::memory::uaccess::strncpy_from_user(&mut path_buf, path_ptr) } {
+        Some(n) => n,
+        None => return u64::MAX - 13, // -EFAULT
+    };
+    let path = match core::str::from_utf8(&path_buf[..len]) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX - 22, // -EINVAL
+    };
+    let entries = match VFS.lock().readdir(path) {
+        Ok(e) => e,
+        Err(_) => return u64::MAX - 2, // -ENOENT
+    };
+    // Encode entries as a newline-separated list.
+    let mut out = alloc::string::String::new();
+    for e in &entries {
+        out.push_str(e.as_str());
+        out.push('\n');
+    }
+    let out_bytes = out.as_bytes();
+    if !crate::memory::uaccess::is_user_range(buf_ptr, buf_len as usize) {
+        return u64::MAX - 13;
+    }
+    let copy_len = out_bytes.len().min(buf_len as usize);
+    if !unsafe { crate::memory::uaccess::copy_to_user(buf_ptr, &out_bytes[..copy_len]) } {
+        return u64::MAX - 13;
+    }
+    copy_len as u64
+}
+
+/// Reboot the system via the PS/2 keyboard controller reset line.
+fn sys_reboot() -> u64 {
+    serial_println!("sys_reboot: rebooting via port 0x64");
+    unsafe { x86_64::instructions::port::Port::<u8>::new(0x64).write(0xFE) };
+    // Spin until the reset takes effect.
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
