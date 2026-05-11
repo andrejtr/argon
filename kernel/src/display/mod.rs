@@ -18,12 +18,16 @@ pub fn init(boot_info: &'static mut BootInfo) {
     } else {
         // VGA text-mode fallback.
         vga::init();
-        vga_println!("  ___ _ _ _ _  ___  ___ ");
-        vga_println!(" | _ || | | || _ \\/ _ \\ ");
-        vga_println!(" | _/| | | ||  _/| (_) |");
-        vga_println!(" |_|  \\___|_||_|   \\___/ ");
+        vga_println!("                               ____   _____ ");
+        vga_println!("                              / __ \\ / ____|");
+        vga_println!("   __ _ _ __ __ _  ___  _ __ | |  | | (___  ");
+        vga_println!("  / _` | '__/ _` |/ _ \\| '_ \\| |  | |\\___ \\ ");
+        vga_println!(" | (_| | | | (_| | (_) | | | | |__| |____) |");
+        vga_println!("  \\__,_|_|  \\__, |\\___/|_| |_|\\____/|_____/ ");
+        vga_println!("             __/ |");
+        vga_println!("            |___/");
         vga_println!("");
-        vga_println!("  argonOS  |  Rust x86_64  |  Secure");
+        vga_println!("            v1.0.0.0");
         serial_println!("display: VGA text mode OK");
     }
 }
