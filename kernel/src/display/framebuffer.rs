@@ -520,7 +520,7 @@ impl FramebufferRenderer {
             "             __/ |",
             "            |___/",
         ];
-        let version = "            v1.0.0.0";
+        let version = "            v0.1.0-alpha";
 
         // Scale 2× on screens ≥ 768 px wide, else scale 1×.
         let scale = if w >= 768 { 2usize } else { 1usize };
@@ -541,7 +541,7 @@ impl FramebufferRenderer {
         // Bottom status bar.
         let bar_y = h.saturating_sub(24);
         self.hline(0, bar_y, w, Rgb::CYAN);
-        let status = "v1.0.0.0   SMEP/SMAP ON   W^X ON   IDT LOADED";
+        let status = "v0.1.0-alpha   SMEP/SMAP ON   W^X ON   IDT LOADED";
         self.draw_str(status, 8, bar_y + 8, Rgb::WHITE, 1);
     }
 }

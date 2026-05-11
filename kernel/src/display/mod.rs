@@ -27,7 +27,7 @@ pub fn init(boot_info: &'static mut BootInfo) {
         vga_println!("             __/ |");
         vga_println!("            |___/");
         vga_println!("");
-        vga_println!("            v1.0.0.0");
+        vga_println!("            v0.1.0-alpha");
         serial_println!("display: VGA text mode OK");
     }
 }

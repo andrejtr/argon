@@ -1,6 +1,6 @@
 # argonOS
 
-A modern, secure, bare-metal x86-64 operating system kernel written in Rust.
+A modern experimental x86-64 operating system kernel written in Rust.
 
 ```
                                ____   _____
@@ -12,7 +12,7 @@ A modern, secure, bare-metal x86-64 operating system kernel written in Rust.
              __/ |
             |___/
 
-            v1.0.0.0
+            v0.1.0-alpha
 ```
 
 ---
