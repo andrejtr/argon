@@ -11,7 +11,7 @@ use bootloader_api::BootInfo;
 pub fn init(boot_info: &'static mut BootInfo) {
     if let Some(fb) = boot_info.framebuffer.as_mut() {
         let info = fb.info();
-        let buf  = fb.buffer_mut();
+        let buf = fb.buffer_mut();
         let mut renderer = framebuffer::FramebufferRenderer::new(buf, info);
         renderer.draw_splash();
         serial_println!("display: framebuffer {}×{} OK", info.width, info.height);

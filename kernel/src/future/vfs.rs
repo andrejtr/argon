@@ -1,7 +1,7 @@
-/// VFS abstraction layer.
-///
-/// Defines the core traits that every filesystem driver must implement.
-/// Concrete implementations (RamFS, FAT, ext2-like) will live in submodules.
+//! VFS abstraction layer.
+//!
+//! Defines the core traits that every filesystem driver must implement.
+//! Concrete implementations (RamFS, FAT, ext2-like) will live in submodules.
 
 /// An opaque file descriptor handle.
 ///

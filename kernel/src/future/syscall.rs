@@ -8,16 +8,16 @@ use crate::serial_println;
 ///
 /// The entry point (`syscall_entry`) is registered in the MSR_LSTAR register
 /// (SYSCALL/SYSRET mechanism) once user-mode processes are added.
-
+///
 /// Linux-compatible 64-bit syscall numbers (subset).
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Syscall {
-    Read  = 0,
+    Read = 0,
     Write = 1,
-    Open  = 2,
+    Open = 2,
     Close = 3,
-    Exit  = 60,
+    Exit = 60,
     /// Any number not yet implemented.
     Unknown,
 }
@@ -25,12 +25,12 @@ pub enum Syscall {
 impl From<u64> for Syscall {
     fn from(n: u64) -> Self {
         match n {
-            0  => Syscall::Read,
-            1  => Syscall::Write,
-            2  => Syscall::Open,
-            3  => Syscall::Close,
+            0 => Syscall::Read,
+            1 => Syscall::Write,
+            2 => Syscall::Open,
+            3 => Syscall::Close,
             60 => Syscall::Exit,
-            _  => Syscall::Unknown,
+            _ => Syscall::Unknown,
         }
     }
 }
@@ -48,8 +48,8 @@ impl From<u64> for Syscall {
 pub fn dispatch(id: u64, arg0: u64, arg1: u64, arg2: u64) -> u64 {
     match Syscall::from(id) {
         Syscall::Write => sys_write(arg0, arg1, arg2),
-        Syscall::Read  => sys_read(arg0, arg1, arg2),
-        Syscall::Exit  => sys_exit(arg0),
+        Syscall::Read => sys_read(arg0, arg1, arg2),
+        Syscall::Exit => sys_exit(arg0),
         Syscall::Open | Syscall::Close => {
             serial_println!("syscall: {:?} not yet implemented", Syscall::from(id));
             u64::MAX // ENOSYS

@@ -42,10 +42,14 @@ fn main() {
 fn launch_qemu_bios() {
     let status = std::process::Command::new("qemu-system-x86_64")
         .args([
-            "-drive", &format!("format=raw,file={BIOS_IMAGE}"),
-            "-m",     "512M",
-            "-serial", "stdio",
-            "-display", "gtk",
+            "-drive",
+            &format!("format=raw,file={BIOS_IMAGE}"),
+            "-m",
+            "512M",
+            "-serial",
+            "stdio",
+            "-display",
+            "gtk",
         ])
         .status();
 
@@ -65,11 +69,16 @@ fn launch_qemu_uefi() {
     // it, but for now we tell the user where to find it.
     let status = std::process::Command::new("qemu-system-x86_64")
         .args([
-            "-drive", &format!("format=raw,file={UEFI_IMAGE}"),
-            "-bios",  "/usr/share/OVMF/OVMF_CODE.fd",
-            "-m",     "512M",
-            "-serial", "stdio",
-            "-display", "gtk",
+            "-drive",
+            &format!("format=raw,file={UEFI_IMAGE}"),
+            "-bios",
+            "/usr/share/OVMF/OVMF_CODE.fd",
+            "-m",
+            "512M",
+            "-serial",
+            "stdio",
+            "-display",
+            "gtk",
         ])
         .status();
 

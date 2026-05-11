@@ -20,12 +20,10 @@ fn main() {
 
     // Put the disk images in a deterministic, human-readable location.
     let out_dir = {
-        let workspace_root = PathBuf::from(
-            env::var_os("CARGO_MANIFEST_DIR").unwrap(),
-        )
-        .parent()
-        .unwrap()
-        .to_path_buf();
+        let workspace_root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+            .parent()
+            .unwrap()
+            .to_path_buf();
         workspace_root.join("target").join("disk-builder-out")
     };
     fs::create_dir_all(&out_dir).expect("failed to create output directory");

@@ -1,11 +1,11 @@
+use crate::arch::x86_64::gdt::DOUBLE_FAULT_IST_INDEX;
 /// Interrupt Descriptor Table (IDT) setup.
 ///
 /// Installs handlers for all CPU exceptions argonOS currently cares about.
 /// Unhandled exceptions loop-halt via the default `x86_64` stub.
 use crate::serial_println;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use spin::Once;
-use crate::arch::x86_64::gdt::DOUBLE_FAULT_IST_INDEX;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 
@@ -17,7 +17,8 @@ pub fn init() {
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.general_protection_fault.set_handler_fn(gpf_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
-        idt.stack_segment_fault.set_handler_fn(stack_segment_handler);
+        idt.stack_segment_fault
+            .set_handler_fn(stack_segment_handler);
         idt.invalid_tss.set_handler_fn(invalid_tss_handler);
         idt.segment_not_present.set_handler_fn(snp_handler);
 
@@ -44,7 +45,11 @@ extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn gpf_handler(frame: InterruptStackFrame, error: u64) {
-    serial_println!("EXCEPTION: GENERAL PROTECTION FAULT (error=0x{:x})\n{:#?}", error, frame);
+    serial_println!(
+        "EXCEPTION: GENERAL PROTECTION FAULT (error=0x{:x})\n{:#?}",
+        error,
+        frame
+    );
     crate::panic::halt_loop();
 }
 
@@ -63,7 +68,11 @@ extern "x86-interrupt" fn page_fault_handler(
 }
 
 extern "x86-interrupt" fn stack_segment_handler(frame: InterruptStackFrame, error: u64) {
-    serial_println!("EXCEPTION: STACK SEGMENT FAULT (error=0x{:x})\n{:#?}", error, frame);
+    serial_println!(
+        "EXCEPTION: STACK SEGMENT FAULT (error=0x{:x})\n{:#?}",
+        error,
+        frame
+    );
     crate::panic::halt_loop();
 }
 
@@ -73,14 +82,19 @@ extern "x86-interrupt" fn invalid_tss_handler(frame: InterruptStackFrame, error:
 }
 
 extern "x86-interrupt" fn snp_handler(frame: InterruptStackFrame, error: u64) {
-    serial_println!("EXCEPTION: SEGMENT NOT PRESENT (error=0x{:x})\n{:#?}", error, frame);
+    serial_println!(
+        "EXCEPTION: SEGMENT NOT PRESENT (error=0x{:x})\n{:#?}",
+        error,
+        frame
+    );
     crate::panic::halt_loop();
 }
 
-extern "x86-interrupt" fn double_fault_handler(
-    frame: InterruptStackFrame,
-    error: u64,
-) -> ! {
-    serial_println!("EXCEPTION: DOUBLE FAULT (error=0x{:x})\n{:#?}", error, frame);
+extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, error: u64) -> ! {
+    serial_println!(
+        "EXCEPTION: DOUBLE FAULT (error=0x{:x})\n{:#?}",
+        error,
+        frame
+    );
     crate::panic::halt_loop();
 }

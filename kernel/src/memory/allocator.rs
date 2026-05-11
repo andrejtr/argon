@@ -10,7 +10,7 @@ use x86_64::PhysAddr;
 
 pub struct BootInfoFrameAllocator {
     regions: &'static MemoryRegions,
-    next:    usize,
+    next: usize,
 }
 
 impl BootInfoFrameAllocator {
@@ -30,10 +30,10 @@ impl BootInfoFrameAllocator {
             .filter(|r| r.kind == MemoryRegionKind::Usable)
             .flat_map(|r| {
                 let start = r.start;
-                let end   = r.end;
+                let end = r.end;
                 // Align start up and end down to 4 KiB boundaries.
                 let frame_start = (start + 0xFFF) & !0xFFF;
-                let frame_end   = end & !0xFFF;
+                let frame_end = end & !0xFFF;
                 (frame_start..frame_end)
                     .step_by(4096)
                     .map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))

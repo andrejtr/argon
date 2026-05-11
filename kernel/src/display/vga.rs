@@ -66,7 +66,10 @@ impl ScreenChar {
         u16::from(self.ascii) | (u16::from(self.color.0) << 8)
     }
     fn from_u16(raw: u16) -> Self {
-        Self { ascii: raw as u8, color: ColorCode(((raw >> 8) & 0xFF) as u8) }
+        Self {
+            ascii: raw as u8,
+            color: ColorCode(((raw >> 8) & 0xFF) as u8),
+        }
     }
 }
 
@@ -96,7 +99,14 @@ impl Writer {
                 if self.column >= BUFFER_WIDTH {
                     self.new_line();
                 }
-                vga_write(self.row, self.column, ScreenChar { ascii: byte, color: self.color });
+                vga_write(
+                    self.row,
+                    self.column,
+                    ScreenChar {
+                        ascii: byte,
+                        color: self.color,
+                    },
+                );
                 self.column += 1;
             }
         }
@@ -133,7 +143,10 @@ impl Writer {
     }
 
     fn clear_row(&mut self, row: usize) {
-        let blank = ScreenChar { ascii: b' ', color: self.color };
+        let blank = ScreenChar {
+            ascii: b' ',
+            color: self.color,
+        };
         for col in 0..BUFFER_WIDTH {
             vga_write(row, col, blank);
         }

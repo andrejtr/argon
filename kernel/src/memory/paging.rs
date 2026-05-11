@@ -52,9 +52,7 @@ pub fn translate_addr(
     // SAFETY: We call this with the known-good offset from the bootloader.
     let mapper = unsafe { init(physical_memory_offset) };
     match mapper.translate(addr) {
-        TranslateResult::Mapped { frame, offset, .. } => {
-            Some(frame.start_address() + offset)
-        }
+        TranslateResult::Mapped { frame, offset, .. } => Some(frame.start_address() + offset),
         _ => None,
     }
 }

@@ -1,5 +1,5 @@
-use core::panic::PanicInfo;
 use crate::serial_println;
+use core::panic::PanicInfo;
 
 /// Kernel panic handler.
 ///

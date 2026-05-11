@@ -23,7 +23,7 @@ static mut DOUBLE_FAULT_STACK: [u8; STACK_SIZE] = [0u8; STACK_SIZE];
 
 struct Selectors {
     code_selector: SegmentSelector,
-    tss_selector:  SegmentSelector,
+    tss_selector: SegmentSelector,
 }
 
 use spin::Once;
@@ -34,7 +34,7 @@ static TSS: Once<TaskStateSegment> = Once::new();
 ///
 /// Must be called before setting up the IDT and before any interrupt can fire.
 pub fn init() {
-    use x86_64::instructions::segmentation::{CS, Segment};
+    use x86_64::instructions::segmentation::{Segment, CS};
     use x86_64::instructions::tables::load_tss;
 
     let tss = TSS.call_once(|| {
@@ -51,7 +51,13 @@ pub fn init() {
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         gdt.append(Descriptor::kernel_data_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(tss));
-        (gdt, Selectors { code_selector, tss_selector })
+        (
+            gdt,
+            Selectors {
+                code_selector,
+                tss_selector,
+            },
+        )
     });
 
     gdt.load();
