@@ -1,4 +1,5 @@
 pub mod allocator;
+pub mod heap;
 pub mod paging;
 use crate::serial_println;
 
@@ -14,6 +15,8 @@ pub fn init(phys_mem_offset: u64) {
 
     // SAFETY: physical_memory_offset is trusted bootloader data.
     let _mapper = unsafe { paging::init(phys_offset) };
+
+    heap::init();
 
     serial_println!("memory: physical offset {:#x}", phys_mem_offset);
 }

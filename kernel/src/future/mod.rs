@@ -6,5 +6,7 @@
 //! phases will build on.
 
 pub mod process;
+pub mod ramfs;
+pub mod scheduler;
 pub mod syscall;
 pub mod vfs;

@@ -1,4 +1,5 @@
 use crate::arch::x86_64::gdt::DOUBLE_FAULT_IST_INDEX;
+use crate::arch::x86_64::pic::{IRQ_KEYBOARD, IRQ_TIMER};
 /// Interrupt Descriptor Table (IDT) setup.
 ///
 /// Installs handlers for all CPU exceptions argonOS currently cares about.
@@ -6,6 +7,9 @@ use crate::arch::x86_64::gdt::DOUBLE_FAULT_IST_INDEX;
 use crate::serial_println;
 use spin::Once;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+/// INT 0x80 — Linux-compatible syscall gate (ring-3 callable once user-mode exists).
+pub const SYSCALL_VECTOR: u8 = 0x80;
 
 static IDT: Once<InterruptDescriptorTable> = Once::new();
 
@@ -29,6 +33,15 @@ pub fn init() {
                 .set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX);
         }
+
+        // Hardware IRQs (PIC-remapped to vectors 32+).  IDT is indexed by u8.
+        idt[IRQ_TIMER].set_handler_fn(timer_handler);
+        idt[IRQ_KEYBOARD].set_handler_fn(keyboard_handler);
+
+        // Syscall gate (INT 0x80, vector 128).
+        idt[SYSCALL_VECTOR]
+            .set_handler_fn(syscall_handler)
+            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
 
         idt
     });
@@ -97,4 +110,37 @@ extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, error
         frame
     );
     crate::panic::halt_loop();
+}
+
+// ---------------------------------------------------------------------------
+// Hardware IRQ handlers
+// ---------------------------------------------------------------------------
+
+extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
+    crate::arch::x86_64::pit::tick();
+    crate::future::scheduler::on_tick();
+    crate::arch::x86_64::pic::end_of_interrupt(crate::arch::x86_64::pic::IRQ_TIMER);
+}
+
+extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
+    // Read and discard the scancode for now to clear the keyboard buffer.
+    let _scancode: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
+    crate::arch::x86_64::pic::end_of_interrupt(crate::arch::x86_64::pic::IRQ_KEYBOARD);
+}
+
+// ---------------------------------------------------------------------------
+// Syscall gate — INT 0x80
+// ---------------------------------------------------------------------------
+
+/// Minimal INT 0x80 handler.
+///
+/// Convention (Linux-compatible):
+///   RAX = syscall number  RDI = arg0  RSI = arg1  RDX = arg2
+///   Return value in RAX.
+///
+/// Until user-mode processes exist this is called only from kernel code in
+/// tests / demos.  The `set_privilege_level(Ring3)` on the IDT entry means
+/// user-mode will be able to invoke it once ring-3 is set up.
+extern "x86-interrupt" fn syscall_handler(_frame: InterruptStackFrame) {
+    serial_println!("syscall: INT 0x80 received");
 }
