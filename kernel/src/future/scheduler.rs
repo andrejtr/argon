@@ -161,6 +161,34 @@ pub fn spawn(entry: fn() -> !) -> Pid {
         .spawn(entry)
 }
 
+/// Force an immediate task switch (sys_yield implementation).
+pub fn force_yield() {
+    if let Some(ref mut sched) = *SCHEDULER.lock() {
+        sched.switch_next();
+    }
+}
+
+/// Return the PID of the currently running task.
+pub fn current_pid() -> Option<Pid> {
+    SCHEDULER
+        .lock()
+        .as_ref()
+        .map(|s| s.tasks[s.current].process.pid)
+}
+
+/// Mark the current task as Zombie and switch to the next ready task.
+pub fn exit_current(code: i32) {
+    if let Some(ref mut sched) = *SCHEDULER.lock() {
+        sched.tasks[sched.current].process.state = ProcessState::Zombie(code);
+        serial_println!(
+            "scheduler: pid={} exited code={}",
+            sched.tasks[sched.current].process.pid.0,
+            code
+        );
+        sched.switch_next();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Low-level helpers
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "disk-builder"]
+members = ["kernel", "disk-builder", "userland/argon-user", "userland/shell"]
 
 [profile.dev]
 opt-level = 1

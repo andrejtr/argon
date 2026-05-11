@@ -1,0 +1,18 @@
+[package]
+name = "argon-user"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "argon_user"
+
+[dependencies]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

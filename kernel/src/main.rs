@@ -13,7 +13,7 @@ mod serial;
 
 use bootloader_api::{entry_point, BootInfo};
 use future::ramfs::RamFs;
-use future::vfs::FileSystem;
+use future::vfs::VFS;
 
 entry_point!(kernel_main);
 
@@ -80,23 +80,34 @@ fn kernel_task_b() -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// RamFS demo
+// RamFS demo — mount via VFS
 // ---------------------------------------------------------------------------
 
 fn ramfs_demo() {
+    // Create and populate RamFS.
     let mut fs = RamFs::new();
-
-    fs.create("/etc/os-release", b"NAME=argonOS\nVERSION=1.0.0.0\n")
+    fs.create("/etc/os-release", b"NAME=argonOS\nVERSION=0.1.0-alpha\n")
         .expect("ramfs create");
     fs.create("/boot/motd", b"Welcome to argonOS!\n")
         .expect("ramfs create");
 
-    let fd = fs.open("/etc/os-release").expect("ramfs open");
+    // Mount at "/" in the global VFS.
+    VFS.lock().mount("/", alloc::boxed::Box::new(fs));
+
+    // Round-trip through VFS.
+    let fd = VFS.lock().open("/etc/os-release").expect("vfs open");
     let mut buf = [0u8; 64];
-    let n = fs.read(fd, &mut buf).expect("ramfs read");
-    fs.close(fd).expect("ramfs close");
+    let n = VFS.lock().read(fd, &mut buf).expect("vfs read");
+    VFS.lock().close(fd).expect("vfs close");
 
     let content = core::str::from_utf8(&buf[..n]).unwrap_or("<utf8 error>");
-    serial_println!("ramfs: /etc/os-release = {:?}", content);
-    serial_println!("ramfs: OK");
+    serial_println!("vfs: /etc/os-release = {:?}", content);
+
+    // List root directory.
+    let entries = VFS.lock().readdir("/").expect("vfs readdir");
+    serial_println!("vfs: / contains {} entries:", entries.len());
+    for e in &entries {
+        serial_println!("  {}", e);
+    }
+    serial_println!("vfs: OK");
 }

@@ -148,14 +148,11 @@ impl FileSystem for RamFs {
         Ok(())
     }
 
-    fn readdir<'a>(&'a mut self, path: &str) -> VfsResult<&'a [&'a str]> {
-        // RamFS is flat — "directory" is a prefix match.  For a flat FS the
-        // root "/" contains everything; anything else is unsupported.
-        if path != "/" {
+    fn readdir(&mut self, path: &str) -> VfsResult<Vec<String>> {
+        // RamFS is flat — "directory" is a prefix match.
+        if path != "/" && !path.is_empty() {
             return Err(VfsError::NotADirectory);
         }
-        // We can't easily return a slice of &str that borrows self here without
-        // allocating; return Unsupported and let callers use `inodes` directly.
-        Err(VfsError::Unsupported)
+        Ok(self.inodes.iter().map(|i| i.name.clone()).collect())
     }
 }
