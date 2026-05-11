@@ -14,7 +14,10 @@ edition = "2021"
 # Artifact dependency: Cargo compiles the kernel for x86_64-unknown-none
 # and exposes the binary path via the CARGO_BIN_FILE_KERNEL_kernel env var.
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+# Shell binary is also needed so we can bake it into the FAT32 data image.
+shell = { path = "../userland/shell", artifact = "bin:shell", target = "x86_64-unknown-none" }
 bootloader = { version = "0.11", features = ["bios", "uefi"] }
+fatfs = "0.3"
 
 [dependencies]
 # Nothing needed at runtime – this binary just prints paths and optionally

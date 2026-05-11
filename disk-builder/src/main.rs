@@ -17,6 +17,7 @@
 
 const BIOS_IMAGE: &str = env!("ARGON_BIOS_IMAGE");
 const UEFI_IMAGE: &str = env!("ARGON_UEFI_IMAGE");
+const DATA_IMAGE: &str = env!("ARGON_DATA_IMAGE");
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -28,6 +29,7 @@ fn main() {
     println!();
     println!("  BIOS image : {}", BIOS_IMAGE);
     println!("  UEFI image : {}", UEFI_IMAGE);
+    println!("  Data image : {}", DATA_IMAGE);
     println!();
 
     if use_uefi {
@@ -40,10 +42,22 @@ fn main() {
 }
 
 fn launch_qemu_bios() {
+    // Boot disk on legacy IDE (for BIOS INT 13h).
+    // Data disk on an explicit AHCI controller so the kernel AHCI driver
+    // finds it at PCI class 01/subclass 06.
     let status = std::process::Command::new("qemu-system-x86_64")
         .args([
+            // Boot disk (BIOS reads this via legacy INT 13h)
             "-drive",
             &format!("format=raw,file={BIOS_IMAGE}"),
+            // AHCI controller for the data disk
+            "-device",
+            "ich9-ahci,id=ahci",
+            // Data disk attached to AHCI port 0
+            "-drive",
+            &format!("if=none,id=data,format=raw,file={DATA_IMAGE}"),
+            "-device",
+            "ide-hd,bus=ahci.0,drive=data",
             "-m",
             "512M",
             "-serial",
@@ -65,14 +79,19 @@ fn launch_qemu_bios() {
 }
 
 fn launch_qemu_uefi() {
-    // OVMF firmware is needed for UEFI.  The `ovmf-prebuilt` crate can provide
-    // it, but for now we tell the user where to find it.
     let status = std::process::Command::new("qemu-system-x86_64")
         .args([
             "-drive",
             &format!("format=raw,file={UEFI_IMAGE}"),
             "-bios",
             "/usr/share/OVMF/OVMF_CODE.fd",
+            // AHCI controller for the data disk
+            "-device",
+            "ich9-ahci,id=ahci",
+            "-drive",
+            &format!("if=none,id=data,format=raw,file={DATA_IMAGE}"),
+            "-device",
+            "ide-hd,bus=ahci.0,drive=data",
             "-m",
             "512M",
             "-serial",

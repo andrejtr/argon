@@ -5,8 +5,10 @@
 extern crate alloc;
 
 mod arch;
+mod block;
 mod display;
 mod drivers;
+mod fs;
 mod future;
 mod memory;
 mod panic;
@@ -61,8 +63,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // 7. SMP: parse MADT, start APs.
     smp::init(rsdp_addr);
 
-    // 8. RamFS smoke-test.
-    ramfs_demo();
+    // 8. Filesystem: try FAT32 from disk; fall back to RamFS.
+    let has_disk_fs = fs::fat32::init();
+    if !has_disk_fs {
+        ramfs_demo();
+    }
 
     // 9. Scheduler: spawn tasks and start round-robin.
     future::scheduler::init();
@@ -85,13 +90,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 // User-mode shell launch
 // ---------------------------------------------------------------------------
 
-/// Embed the shell ELF binary, parse it, create a user address space, and
-/// spawn it as a ring-3 process.  Returns `true` on success.
+/// Load the shell ELF, parse it, create a user address space, and spawn it
+/// as a ring-3 process.  Prefers reading from `/bin/shell` on the VFS (M3),
+/// then falls back to the compile-time embedded binary.
+///
+/// Returns `true` on success.
 fn launch_shell() -> bool {
-    // The shell binary is embedded at compile time via the bindeps artifact dep.
-    const SHELL_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_SHELL_shell"));
+    // Try loading from disk first.
+    let disk_bytes = load_file_from_vfs("/bin/shell");
+    let shell_elf_embedded: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_SHELL_shell"));
+    let shell_bytes: &[u8] = if let Some(ref b) = disk_bytes {
+        serial_println!("shell: loaded {} bytes from /bin/shell", b.len());
+        b.as_slice()
+    } else {
+        serial_println!("shell: /bin/shell not on disk; using embedded ELF");
+        shell_elf_embedded
+    };
 
-    let elf = match crate::future::elf::load(SHELL_ELF) {
+    let elf = match crate::future::elf::load(shell_bytes) {
         Ok(e) => e,
         Err(e) => {
             serial_println!("shell: ELF load failed: {:?}", e);
@@ -165,6 +181,32 @@ fn kernel_shell_task() -> ! {
                 serial_println!("unknown command: {}", other);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Read an entire file from the VFS into a heap-allocated Vec.
+/// Returns None if the file cannot be opened or read.
+fn load_file_from_vfs(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    let mut vfs = crate::future::vfs::VFS.lock();
+    let fd = vfs.open(path).ok()?;
+    let mut data = alloc::vec::Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match vfs.read(fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => data.extend_from_slice(&buf[..n]),
+            Err(_) => break,
+        }
+    }
+    let _ = vfs.close(fd);
+    if data.is_empty() {
+        None
+    } else {
+        Some(data)
     }
 }
 
