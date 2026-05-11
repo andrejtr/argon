@@ -1,0 +1,21 @@
+[package]
+name = "disk-builder"
+version = "0.1.0"
+edition = "2021"
+
+# This crate runs on the host (macOS/Linux) – NOT on x86_64-unknown-none.
+# Override the workspace default target so Cargo builds it for the host.
+[package.metadata]
+# Intentionally left blank; actual target override is in .cargo/config.toml
+# but disk-builder is excluded from the default x86_64-unknown-none target
+# via the build.rs artifact dependency mechanism.
+
+[build-dependencies]
+# Artifact dependency: Cargo compiles the kernel for x86_64-unknown-none
+# and exposes the binary path via the CARGO_BIN_FILE_KERNEL_kernel env var.
+kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
+bootloader = { version = "0.11", features = ["bios", "uefi"] }
+
+[dependencies]
+# Nothing needed at runtime – this binary just prints paths and optionally
+# launches QEMU.

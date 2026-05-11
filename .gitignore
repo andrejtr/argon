@@ -1,0 +1,28 @@
+# Cargo build artifacts
+/target/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editor state
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Secrets / env
+.env
+.env.*
+
+# VirtualBox machine files (if you create a VM inside the repo)
+*.vbox
+*.vbox-prev
+*.vdi
+*.vmdk
+
+# QEMU process files
+*.pid

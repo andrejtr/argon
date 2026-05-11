@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Disable automatic rustup self-updates – they waste CI time.
+  RUSTUP_UPDATE_ROOT: https://static.rust-lang.org/rustup
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build + lint
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # dtolnay/rust-toolchain reads rust-toolchain.toml automatically.
+      - name: Install Rust nightly + cross-compile target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools, clippy, rustfmt
+          targets: x86_64-unknown-none
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # Kernel — must be built for bare metal, never the host.
+      - name: Build kernel (debug)
+        run: cargo build -p kernel --target x86_64-unknown-none
+
+      - name: Build kernel (release)
+        run: cargo build -p kernel --target x86_64-unknown-none --release
+
+      # Clippy: treat warnings as errors in CI.
+      - name: Clippy (kernel)
+        run: >
+          cargo clippy
+          -p kernel
+          --target x86_64-unknown-none
+          --
+          -D warnings
+          -A dead_code
+
+      # disk-builder runs on the host — no --target flag.
+      - name: Build disk images
+        run: cargo build -p disk-builder
+
+      - name: Upload disk images (debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: argonOS-disk-images-debug
+          path: target/disk-builder-out/
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Formatting check
+  # ---------------------------------------------------------------------------
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+          targets: x86_64-unknown-none
+
+      - name: Check formatting (kernel)
+        run: cargo fmt -p kernel --check
+
+      - name: Check formatting (disk-builder)
+        run: cargo fmt -p disk-builder --check
+
+  # ---------------------------------------------------------------------------
+  # Security audit — scans Cargo.lock for known CVEs.
+  # ---------------------------------------------------------------------------
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    # Don't block the build on audit, but surface results.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

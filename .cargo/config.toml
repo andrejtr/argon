@@ -1,0 +1,18 @@
+[unstable]
+bindeps = true
+
+# Convenience aliases — avoids typing --target on every kernel command.
+# Usage: cargo build-kernel, cargo check-kernel, cargo clippy-kernel
+[alias]
+build-kernel  = "build  -p kernel --target x86_64-unknown-none"
+check-kernel  = "check  -p kernel --target x86_64-unknown-none"
+clippy-kernel = "clippy -p kernel --target x86_64-unknown-none"
+build-images  = "build  -p disk-builder"
+run-images    = "run    -p disk-builder"
+
+# Kernel-specific compiler flags (only applied when targeting bare metal).
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-Z", "stack-protector=strong",
+]

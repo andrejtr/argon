@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # required to create GitHub releases
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust nightly + cross-compile target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools
+          targets: x86_64-unknown-none
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      # Build optimised disk images.
+      - name: Build disk images (release)
+        run: cargo build -p disk-builder --release
+
+      # Install qemu-utils for VMDK conversion.
+      - name: Install qemu-utils
+        run: sudo apt-get install -y --no-install-recommends qemu-utils
+
+      # Produce tagged, named artifacts.
+      - name: Rename and convert images
+        run: |
+          TAG="${{ github.ref_name }}"
+          OUT="target/disk-builder-out"
+
+          cp "$OUT/bios.img" "$OUT/argonOS-${TAG}-bios.img"
+          cp "$OUT/uefi.img" "$OUT/argonOS-${TAG}-uefi.img"
+
+          # VMDK for direct VirtualBox import (no extra tools needed on the host).
+          qemu-img convert -f raw -O vmdk \
+            "$OUT/bios.img" \
+            "$OUT/argonOS-${TAG}-bios.vmdk"
+
+      # Print SHA-256 checksums into the release notes.
+      - name: Generate checksums
+        id: checksums
+        run: |
+          TAG="${{ github.ref_name }}"
+          OUT="target/disk-builder-out"
+          echo "## Checksums (SHA-256)" > checksums.txt
+          echo '```' >> checksums.txt
+          sha256sum \
+            "$OUT/argonOS-${TAG}-bios.img" \
+            "$OUT/argonOS-${TAG}-uefi.img" \
+            "$OUT/argonOS-${TAG}-bios.vmdk" \
+            >> checksums.txt
+          echo '```' >> checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "argonOS ${{ github.ref_name }}"
+          body_path: checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            target/disk-builder-out/argonOS-${{ github.ref_name }}-bios.img
+            target/disk-builder-out/argonOS-${{ github.ref_name }}-uefi.img
+            target/disk-builder-out/argonOS-${{ github.ref_name }}-bios.vmdk
