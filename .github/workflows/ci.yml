@@ -96,11 +96,12 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    # Don't block the build on audit, but surface results.
+    # Don't block the build on audit warnings (unmaintained crates, etc.)
     continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
