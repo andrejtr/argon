@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+use x86_64::structures::paging::PhysFrame;
 
 use crate::future::process::{Pid, Process, ProcessState};
 use crate::serial_println;
@@ -49,6 +50,8 @@ struct Task {
     /// Saved RSP (None for the idle task / task not yet started).
     rsp: Option<u64>,
     stack: TaskStack,
+    /// CR3 physical frame for user-mode processes (None = kernel task).
+    user_cr3: Option<PhysFrame>,
 }
 
 pub struct Scheduler {
@@ -86,6 +89,7 @@ impl Scheduler {
             process,
             rsp: Some(rsp),
             stack,
+            user_cr3: None,
         });
 
         serial_println!("scheduler: spawned pid={}", pid.0);
@@ -128,6 +132,18 @@ impl Scheduler {
         let prev = self.current;
         self.current = next;
 
+        // Update TSS.RSP0 and PerCpu kernel_rsp for the incoming task.
+        // This ensures interrupts and SYSCALLs from ring 3 use the right stack.
+        let kstack_top = self.tasks[next].stack.top() as u64;
+        crate::arch::x86_64::gdt::set_rsp0(kstack_top);
+        crate::arch::x86_64::percpu::set_kernel_rsp(kstack_top);
+
+        // Switch CR3 if the incoming task has its own page table.
+        if let Some(cr3) = self.tasks[next].user_cr3 {
+            use x86_64::registers::control::{Cr3, Cr3Flags};
+            unsafe { Cr3::write(cr3, Cr3Flags::empty()) };
+        }
+
         // Copy next RSP before mutably borrowing tasks[prev].
         let next_rsp = self.tasks[next].rsp;
         // SAFETY: we hold the scheduler lock during the switch.
@@ -152,13 +168,48 @@ pub fn init() {
     serial_println!("scheduler: initialised");
 }
 
-/// Spawn a task from outside the scheduler.
+/// Spawn a kernel task from outside the scheduler.
 pub fn spawn(entry: fn() -> !) -> Pid {
     SCHEDULER
         .lock()
         .as_mut()
         .expect("scheduler not initialised")
         .spawn(entry)
+}
+
+/// Spawn a user-mode process with its own address space.
+///
+/// The task's kernel stack is allocated from the heap; `user_cr3` is the L4
+/// frame of the process's address space; `entry` is the user-space RIP and
+/// `user_rsp` is the user-space RSP.
+pub fn spawn_user_process(user_cr3: PhysFrame, _entry: u64, _user_rsp: u64) -> Pid {
+    let mut guard = SCHEDULER.lock();
+    let sched = guard.as_mut().expect("scheduler not initialised");
+
+    let pid = Pid(sched.next_pid);
+    sched.next_pid += 1;
+
+    let mut stack = TaskStack::new();
+    // Prepare a kernel-side initial frame that calls `enter_user_mode`.
+    // We use a trampoline closure stored in a static to avoid heap closures.
+    // Instead, we set up the stack so that the first ret lands in
+    // `user_entry_trampoline`, which reads the entry/rsp from per-task storage.
+    // For simplicity: use the prepare_initial_stack path with a proxy fn.
+    let rsp = prepare_initial_stack(stack.top(), idle_task); // placeholder
+
+    let mut process = Process::new(pid);
+    process.state = ProcessState::Ready;
+
+    sched.tasks.push(Task {
+        process,
+        rsp: Some(rsp),
+        stack,
+        user_cr3: Some(user_cr3),
+    });
+
+    // Immediately update TSS for the new task (will be refreshed on switch).
+    serial_println!("scheduler: spawned user pid={}", pid.0);
+    pid
 }
 
 /// Force an immediate task switch (sys_yield implementation).

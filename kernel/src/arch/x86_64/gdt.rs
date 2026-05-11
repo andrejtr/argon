@@ -105,3 +105,16 @@ pub fn init() {
         load_tss(selectors.tss_selector);
     }
 }
+
+/// Update the TSS RSP0 field (kernel stack pointer used on ring-0 entry).
+///
+/// Must be called before switching to a new task's ring-3 context so that
+/// interrupts and SYSCALLs return to the correct kernel stack.
+pub fn set_rsp0(rsp: u64) {
+    if let Some(tss) = TSS.get() {
+        // SAFETY: We update the TSS while holding the scheduler lock;
+        // no concurrent access is possible on this core.
+        let ptr = (tss as *const TaskStateSegment).cast_mut();
+        unsafe { (*ptr).privilege_stack_table[0] = VirtAddr::new(rsp) };
+    }
+}

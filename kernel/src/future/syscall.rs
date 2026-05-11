@@ -1,5 +1,7 @@
 use crate::serial_println;
 
+extern crate alloc;
+
 /// Syscall dispatch layer.
 ///
 /// Defines the Linux-compatible syscall numbers argonOS supports and a typed
@@ -75,24 +77,56 @@ pub fn dispatch(id: u64, arg0: u64, arg1: u64, arg2: u64, _arg3: u64) -> u64 {
 // Implementations
 // ---------------------------------------------------------------------------
 
-fn sys_write(fd: u64, _buf_ptr: u64, len: u64) -> u64 {
+fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> u64 {
     if fd == 1 || fd == 2 {
-        // TODO: when user-mode is live, copy buf from user address space.
-        serial_println!("sys_write: fd={} len={} (stub)", fd, len);
+        // Validate that the buffer lives in user address space.
+        if !crate::memory::uaccess::is_user_range(buf_ptr, len as usize) {
+            return u64::MAX - 13; // -EFAULT
+        }
+        let mut tmp = alloc::vec![0u8; len as usize];
+        // SAFETY: is_user_range validated the address; SMAP is bypassed via STAC/CLAC.
+        if !unsafe { crate::memory::uaccess::copy_from_user(tmp.as_mut_slice(), buf_ptr) } {
+            return u64::MAX - 13; // -EFAULT
+        }
+        if let Ok(s) = core::str::from_utf8(&tmp) {
+            serial_println!("sys_write({}): {}", fd, s.trim_end());
+        }
         len
     } else {
         EBADF
     }
 }
 
-fn sys_read(fd: u64, _buf_ptr: u64, len: u64) -> u64 {
-    serial_println!("sys_read: fd={} len={} (stub)", fd, len);
-    0 // EOF
+fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> u64 {
+    if fd != 0 {
+        return EBADF;
+    }
+    if !crate::memory::uaccess::is_user_range(buf_ptr, len as usize) {
+        return u64::MAX - 13; // -EFAULT
+    }
+    // Read one character from the keyboard driver.
+    let c = crate::drivers::keyboard::read_char();
+    let buf = [c];
+    // SAFETY: is_user_range validated the address; STAC/CLAC bypass SMAP.
+    if !unsafe { crate::memory::uaccess::copy_to_user(buf_ptr, &buf) } {
+        return u64::MAX - 13;
+    }
+    1
 }
 
 fn sys_open(path_ptr: u64) -> u64 {
-    // TODO: validate user pointer, read null-terminated path.
-    serial_println!("sys_open: path_ptr={:#x} (stub)", path_ptr);
+    // Validate and copy the null-terminated path from user space.
+    let mut path_buf = [0u8; 256];
+    // SAFETY: strncpy_from_user validates the address range before accessing.
+    let len = match unsafe { crate::memory::uaccess::strncpy_from_user(&mut path_buf, path_ptr) } {
+        Some(n) => n,
+        None => return u64::MAX - 13, // -EFAULT
+    };
+    let path = match core::str::from_utf8(&path_buf[..len]) {
+        Ok(s) => s,
+        Err(_) => return u64::MAX - 22, // -EINVAL
+    };
+    serial_println!("sys_open: path=\"{}\"", path);
     ENOSYS
 }
 

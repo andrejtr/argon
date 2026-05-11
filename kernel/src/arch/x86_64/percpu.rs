@@ -63,3 +63,12 @@ pub unsafe fn init() {
         kstack_top
     );
 }
+
+/// Update the kernel RSP stored in the BSP PerCpu area.
+///
+/// Called by the scheduler before each ring-3 switch so SYSCALL/interrupt
+/// entry always loads the new task's kernel stack.
+pub fn set_kernel_rsp(rsp: u64) {
+    // SAFETY: single-core BSP; scheduler lock guarantees exclusive access.
+    unsafe { BSP_PERCPU.kernel_rsp = rsp };
+}

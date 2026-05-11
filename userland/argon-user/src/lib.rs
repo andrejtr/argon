@@ -154,3 +154,16 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     write(2, b"argon-user: panic\n");
     exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// Stack-smashing protector symbols (required by -Z stack-protector=strong)
+// ---------------------------------------------------------------------------
+
+#[no_mangle]
+pub static __stack_chk_guard: u64 = 0xDEAD_BEEF_DEAD_BEEF;
+
+#[no_mangle]
+pub extern "C" fn __stack_chk_fail() -> ! {
+    write(2, b"argon-user: stack smashing detected\n");
+    exit(1);
+}

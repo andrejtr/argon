@@ -123,8 +123,9 @@ extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
-    // Read and discard the scancode for now to clear the keyboard buffer.
-    let _scancode: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
+    // Read scancode from data port and route it to the keyboard driver.
+    let scancode: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
+    crate::drivers::keyboard::push_scancode(scancode);
     crate::arch::x86_64::pic::end_of_interrupt(crate::arch::x86_64::pic::IRQ_KEYBOARD);
 }
 

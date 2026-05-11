@@ -6,10 +6,12 @@ extern crate alloc;
 
 mod arch;
 mod display;
+mod drivers;
 mod future;
 mod memory;
 mod panic;
 mod serial;
+mod smp;
 
 use bootloader_api::{entry_point, BootInfo};
 use future::ramfs::RamFs;
@@ -25,24 +27,46 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     serial_println!("argonOS booting...");
 
-    // 3. Memory: page table + heap (must come before any alloc).
+    // Extract bootloader data before taking mutable borrows for display.
     let phys_mem_offset = boot_info
         .physical_memory_offset
         .into_option()
         .expect("bootloader must provide physical_memory_offset");
-    memory::init(phys_mem_offset);
+
+    let rsdp_addr = boot_info.rsdp_addr.into_option().unwrap_or(0);
+
+    // SAFETY: We take a raw pointer to memory_regions before passing boot_info
+    // to display::init so both can coexist without borrow conflicts.
+    let memory_regions: &'static bootloader_api::info::MemoryRegions = {
+        let ptr: *const bootloader_api::info::MemoryRegions = &boot_info.memory_regions;
+        unsafe { &*ptr }
+    };
+
+    // 3. Memory: page table + frame allocator + heap (must come before any alloc).
+    memory::init(phys_mem_offset, memory_regions);
     serial_println!("memory: OK  (heap 1 MiB)");
 
     // 4. Boot splash.
     display::init(boot_info);
 
-    // 5. RamFS smoke-test.
+    // 5. Keyboard driver.
+    drivers::keyboard::init();
+
+    // 6. Storage: AHCI + NVMe (best-effort; log and continue on missing hardware).
+    unsafe {
+        drivers::ahci::init();
+        drivers::nvme::init();
+    }
+
+    // 7. SMP: parse MADT, start APs.
+    smp::init(rsdp_addr);
+
+    // 8. RamFS smoke-test.
     ramfs_demo();
 
-    // 6. Scheduler: spawn tasks and start round-robin.
+    // 9. Scheduler: spawn tasks and start round-robin.
     future::scheduler::init();
-    future::scheduler::spawn(kernel_task_a);
-    future::scheduler::spawn(kernel_task_b);
+    future::scheduler::spawn(kernel_shell_task);
     serial_println!("scheduler: running");
 
     serial_println!("argonOS ready.");
@@ -54,28 +78,40 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 }
 
 // ---------------------------------------------------------------------------
-// Demo kernel tasks
+// Kernel-mode interactive shell task
 // ---------------------------------------------------------------------------
 
-fn kernel_task_a() -> ! {
-    let mut n = 0u64;
+/// A simple interactive shell running in kernel mode (ring 0).
+///
+/// This will be replaced by a proper ring-3 user-mode shell once ELF loading
+/// and process spawning are fully wired.
+fn kernel_shell_task() -> ! {
+    serial_println!("shell: kernel-mode shell started");
     loop {
-        if n.is_multiple_of(500) {
-            serial_println!("task-A: tick {}", n);
+        serial_println!("argonOS> ");
+        let mut buf = [0u8; 256];
+        let n = drivers::keyboard::readline(&mut buf);
+        if n == 0 {
+            continue;
         }
-        n += 1;
-        x86_64::instructions::interrupts::enable_and_hlt();
-    }
-}
-
-fn kernel_task_b() -> ! {
-    let mut n = 0u64;
-    loop {
-        if n.is_multiple_of(500) {
-            serial_println!("task-B: tick {}", n);
+        let line = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+        match line {
+            "help" => {
+                serial_println!("commands: help echo yield reboot");
+            }
+            "" => {}
+            _ if line.starts_with("echo ") => {
+                serial_println!("{}", &line[5..]);
+            }
+            "yield" => future::scheduler::force_yield(),
+            "reboot" => {
+                serial_println!("Rebooting...");
+                unsafe { x86_64::instructions::port::Port::<u8>::new(0x64).write(0xFE) };
+            }
+            other => {
+                serial_println!("unknown command: {}", other);
+            }
         }
-        n += 1;
-        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 
